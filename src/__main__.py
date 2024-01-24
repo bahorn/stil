@@ -305,7 +305,9 @@ class PopIpOp(ILOp):
     CONSUMES = 1
 
     def action(self, state):
-        state.set_ip(state.pop())
+        next = state.pop()
+        print(next)
+        state.set_ip(next)
 
 
 class InteruptOp(ILOp):
@@ -406,7 +408,6 @@ class TranslationNamespace:
         }]
 
     def leave(self):
-        raise Unimplemented()
         self._offset = self._stack[-1]['base']
         self._stack = self._stack[:-1]
 
@@ -414,6 +415,9 @@ class TranslationNamespace:
         print(self._offset, symbol)
         curr = self._stack[-1]['offsets']
         curr[symbol] = self._offset - self._stack[-1]['base']
+
+    def depth(self):
+        return self._offset - self._stack[-1]['base']
 
     def push(self, count=1):
         # just a push that we had nothing to do with.
@@ -536,13 +540,12 @@ class Translator(ast.NodeVisitor):
                 self._ts.pop()
             return
 
-        self.generic_visit(node)
-
+        # self.generic_visit(node)
         self._res.append(PushIpOp())
-        self._res.append(Push(4))
+        self._res.append(PushOp(4))
         self._res.append(AddOp())
-        self._res.append(JumpPOp(call.func.id))
-        ts.push()
+        self._res.append(JumpPOp(node.func.id))
+        self._ts.push()
 
     def visit_Return(self, node):
         self._res.append(Info(f'Return {ast.unparse(node.value)}'))
@@ -551,6 +554,11 @@ class Translator(ast.NodeVisitor):
             return
 
         self.generic_visit(node)
+        # need to restore the stack back to its original value
+        for _ in range(self._ts.depth() - 1):
+            self._res.append(SwapOp())
+            self._res.append(PopOp())
+        # now restore the IP and jump
         self._res.append(SwapOp())
         self._res.append(PopIpOp())
 
@@ -572,12 +580,14 @@ class Translator(ast.NodeVisitor):
                 self._entrypoint = node.name
 
         self._res.append(Info(f'Function {node.name}'))
+        self._res.append(Label(node.name))
         # deal with the arguments
         for child in node.body:
             self.visit(child)
         # print(node.__dict__)
         self._funcs[node.name] = self._res
         self._res = []
+        self._ts.leave()
 
     def visit_Module(self, node):
         # self._res.append(Info(f'Module {node}'))
