@@ -14,18 +14,23 @@ class Undefined(Exception):
 
 
 class State:
-    def __init__(self, instructions):
+    def __init__(self, instructions, maxins=100):
         self._stack = []
         self._instructions = instructions
         self._curr = 0
         self._cond = False
         self._done = False
+        self._stack_base = 0
+        self._maxins = maxins
+        self._ins = 0
 
-    def peek(self, idx=1):
-        return self._stack[-idx]
+    def peek(self, idx=0):
+        print('peek> ',self._stack_base, idx)
+        return self._stack[self._stack_base + idx]
 
     def poke(self, idx, value):
-        self._stack[-idx] = value
+        print('poke> ', self._stack_base, idx)
+        self._stack[self._stack_base + idx] = value
 
     def pop(self):
         res = self._stack[-1]
@@ -36,6 +41,10 @@ class State:
         self._stack += [value]
 
     def step(self):
+        if self._ins >= self._maxins:
+            self.done()
+            return
+
         if self._done:
             return
 
@@ -45,12 +54,14 @@ class State:
             self._done = True
             return
 
-        print(f'{self._curr:04x} {ins}')
+        print(f'{self._curr:04} {ins}')
 
         next = ins.action(self)
         if next is None:
             next = 1
         self._curr += next
+
+        self._ins += 1
 
     def set_ip(self, value):
         self._curr = value
@@ -63,6 +74,12 @@ class State:
 
     def get_cond(self):
         return self._cond
+
+    def set_stack_base(self, value):
+        self._stack_base = value
+
+    def get_stack_base(self):
+        return self._stack_base
 
     def done(self):
         self._done = True
@@ -143,6 +160,29 @@ class PokeOp(ILOp):
         a = state.pop()
         b = state.pop()
         state.poke(a, b)
+
+
+class NewSPOp(ILOp):
+    CONSUMES = 0
+
+    def action(self, state):
+        state.set_stack_base(len(state._stack))
+
+
+class PushSPOp(ILOp):
+    CONSUMES = -1
+
+    def action(self, state):
+        sp = state.get_stack_base()
+        state.push(sp)
+
+
+class PopSPOp(ILOp):
+    CONSUMES = 1
+
+    def action(self, state):
+        sp = state.pop()
+        state.set_stack_base(sp)
 
 
 class DupOp(ILOp):
@@ -324,6 +364,8 @@ class InteruptOp(ILOp):
 
 
 class POp:
+    CONSUMES = 0
+
     def __init__(self, name):
         self._name = name
 
@@ -332,6 +374,9 @@ class POp:
 
     def __str__(self):
         return f'{self.__class__.__name__} ({self._name})'
+
+    def consumes(self):
+        return self.CONSUMES
 
 
 class Info(POp):
@@ -348,6 +393,50 @@ class JumpPOp(POp):
 
 class JumpCondPOp(JumpPOp):
     pass
+
+
+class VariableLabel(POp):
+    """
+    Labels the stack position being inserted
+    """
+
+
+class PushPOp(POp):
+    """
+    A Pushop that refers to a stack position
+    """
+    CONSUMES = -1
+
+
+class ResolvePOp(POp):
+    def __init__(self, name, variable):
+        self._name = name
+        self._variable = variable
+
+    def variable(self):
+        return self._variable
+
+
+class ResolvePokePOp(ResolvePOp):
+    CONSUMES = 0
+
+
+class ResolvePeekPOp(ResolvePOp):
+    CONSUMES = 0
+
+
+class PopArg(POp):
+    """
+    Balancing arguments we just removed when returning.
+    """
+    CONSUMES = -1
+
+
+class PushArg(POp):
+    """
+    Balancing the value we pushed as the return value.
+    """
+    CONSUMES = 1
 
 
 def assemble(ins_list):
@@ -373,8 +462,14 @@ def assemble(ins_list):
                 idx += 2
             case Info():
                 continue
+            case VariableLabel():
+                continue
+            case PopArg():
+                continue
+            case PushArg():
+                continue
             case _:
-                raise Unimplemented()
+                raise Unimplemented(ins)
 
     for ins in new_ins_tmp:
         if not isinstance(ins, JumpPOp):
@@ -394,125 +489,163 @@ def assemble(ins_list):
 
 # Now Functions that can be used for the translation
 
-class TranslationNamespace:
+
+class VariableDefinitions(ast.NodeVisitor):
+    """
+    Pass to discover all variable definitions in the ast.
+
+    Does not resolve the actual assignment value, just for name discovery.
+    """
+
     def __init__(self):
-        self._stack = []
-        self._offset = 0
-        self.enter('global')
-
-    def enter(self, name=None):
-        self._stack += [{
-            'name': name,
-            'offsets': {},
-            'base': self._offset
-        }]
-
-    def leave(self):
-        self._offset = self._stack[-1]['base']
-        self._stack = self._stack[:-1]
-
-    def define(self, symbol):
-        print(self._offset, symbol)
-        curr = self._stack[-1]['offsets']
-        curr[symbol] = self._offset - self._stack[-1]['base']
-
-    def depth(self):
-        return self._offset - self._stack[-1]['base']
-
-    def push(self, count=1):
-        # just a push that we had nothing to do with.
-        print('> push')
-        self._offset += count
-
-    def pop(self, count=1):
-        print('> pop')
-        self._offset -= count
-
-    def offset(self, symbol):
-        """
-        Find the relative offset from the current position for the instruction.
-        """
-        res = None
-
-        for frame in self._stack[::-1]:
-            if symbol in frame['offsets']:
-                sym = frame['offsets'][symbol]
-                print(sym, self._offset, frame['base'])
-                return self._offset - (frame['base'] + sym)
-
-        return res
-
-
-class Translator(ast.NodeVisitor):
-    def __init__(self):
-        self._ts = TranslationNamespace()
         self._funcs = {}
-        self._res = []
+        self._definitions = []
         self._curr = None
-        self._entrypoint = None
 
-    def result(self):
-        res = []
-        for func, body in self._funcs.items():
-            if func == self._entrypoint:
-                continue
-            res += body
-        res = self._funcs[self._entrypoint] + res
-        return res
-
-    def generic_visit(self, node):
-        super().generic_visit(node)
-
-    def visit_Constant(self, node):
-        self._ts.push()
-        self._res.append(PushOp(node.value))
-
-    def visit_Name(self, node):
-        self._ts.push()
-        off = self._ts.offset(node.id)
-        self._res.append(PushOp(off))
-        self._res.append(PeekOp())
-        self._ts.pop()
+    def results(self):
+        return self._funcs
 
     def visit_Assign(self, node):
-        # check if it already exists in the namespace.
         if len(node.targets) != 1:
             raise Unimplemented()
 
         target = node.targets[0].id
-        self._res.append(Info(f'Assign {target}'))
+        self._definitions.append(target)
 
-        offset = self._ts.offset(target)
+    def visit_FunctionDef(self, node):
+        self._curr = node.name
+        self.generic_visit(node)
 
-        # The value will be pushed to the stack
+        decorators = [decorator.id for decorator in node.decorator_list]
+
+        # ip is an hidden argument, used as part of the calling convention
+        self._funcs[self._curr] = {
+            'args': [arg.arg for arg in node.args.args],
+            'defs': sorted(list(set(self._definitions))),
+            'ref': node,
+            'decorators': decorators,
+        }
+        self._internal = []
+        self._curr = None
+
+
+class StatementTranslator(ast.NodeVisitor):
+    """
+    Translates a statement in a function body.
+
+    Statements should always return the stack back to its original state.
+    (with the exception of return statements, which are handled by inserting
+     balancing arguments)
+
+    The only things that should be pushing new values to the stack that stay
+    are entering functions.
+    """
+
+    IMPLEMENTED = (
+        ast.Assign, ast.Call, ast.Return, ast.Name, ast.Constant, ast.Expr,
+        ast.BinOp
+    )
+
+    def __init__(self, funcname, remap):
+        self._res = []
+        self._idx = 0
+        self._remap = remap
+        self._funcname = funcname
+
+    def results(self):
+        return self._res
+
+    def get_idx(self, name):
+        self._idx += 1
+        return f'{name}-{self._idx}'
+
+    def generic_visit(self, node):
+        if not isinstance(node, self.IMPLEMENTED):
+            raise Unimplemented(node)
+
+        super().generic_visit(node)
+
+    def visit_Assign(self, node):
+        target = node.targets[0].id
+        ref = self.get_idx(target)
+
         self.visit(node.value)
+        # -1
+        self._res.append(PushPOp(ref))
+        # 2
+        self._res.append(PokeOp())
+        self._res.append(ResolvePokePOp(ref, target))
 
-        if offset is None:
-            self._ts.define(target)
-        else:
-            offset = self._ts.offset(target)
-            self._res.append(PushOp(offset))
-            self._res.append(PokeOp())
-            self._ts.pop()
+    def visit_Call(self, node):
+        # -2 to remove the ip and sp
+        call_args = len(self._remap[node.func.id]['args'])
+        if len(node.args) != call_args:
+            raise Exception("Arg missmatch!")
 
-    def visit_AugAssign(self, node):
-        raise Unimplemented()
+        # Layout:
+        # SP [arg1 ... argn] IP
 
-    def visit_AnnAssign(self, node):
-        raise Unimplemented()
+        # Push the current SP to the stack
+        self._res.append(PushSPOp())
+
+        # Set the new SP
+        self._res.append(NewSPOp())
+
+        # push all the arguments onto the stack
+        for arg in node.args:
+            self.visit(arg)
+
+        # push the return address to the stack
+        self._res.append(PushIpOp())
+        # the code after is 4 operations ahead of the ip of that PushIpOp()
+        self._res.append(PushOp(4))
+        self._res.append(AddOp())
+        # Now do the jump
+        self._res.append(JumpPOp(node.func.id))
+        # Back in our code, we want to pop the arguments
+        for _ in node.args:
+            # Swaping to preserve the return value
+            self._res.append(SwapOp())
+            self._res.append(PopOp())
+
+        self._res.append(SwapOp())
+        self._res.append(PopSPOp())
 
     def visit_Name(self, node):
-        self._ts.push()
-        res = self._ts.offset(node.id)
-        self._res.append(PushOp(res))
+        ref = self.get_idx(node.id)
+        self._res.append(PushPOp(ref))
         self._res.append(PeekOp())
+        self._res.append(ResolvePeekPOp(ref, node.id))
 
-    def visit_expr(self, node):
+    def visit_Constant(self, node):
+        # -1
+        op = PushOp(node.value)
+        self._res.append(op)
+
+    def visit_Return(self, node):
+        # duplicate the return value
+        self._res.append(PushArg('ret'))
+        self.visit(node.value)
+
+        # pop our local state off, leaving just the return arguments.
+        for var in self._remap[self._funcname]['defs']:
+            self._res.append(PopArg(var))
+            self._res.append(SwapOp())
+            self._res.append(PopOp())
+
+        # now restore the IP and jump
+        self._res.append(PopArg('ip'))
+        self._res.append(SwapOp())
+        self._res.append(PopIpOp())
+
+    def visit_Expr(self, node):
+        # just a wrapper around things we care about
         self.generic_visit(node)
 
     def visit_BinOp(self, node):
-        self.generic_visit(node)
         op = None
+        self.visit(node.right)
+        self.visit(node.left)
 
         match node.op:
             case ast.Add():
@@ -525,90 +658,146 @@ class Translator(ast.NodeVisitor):
                 op = DivOp()
             case _:
                 raise Unimplemented()
+
         self._res.append(op)
-        self._ts.pop(op.consumes())
 
-    def visit_Call(self, node):
-        self._res.append(Info(f'call {node.func.id}'))
-        if node.func.id == 'print':
-            for arg in node.args:
-                self.visit(arg)
-            self._res.append(PushOp(1))
-            self._res.append(InteruptOp())
-            # restore the stack
-            for arg in node.args:
-                self._ts.pop()
-            return
 
-        # self.generic_visit(node)
-        self._res.append(PushIpOp())
-        self._res.append(PushOp(4))
-        self._res.append(AddOp())
-        self._res.append(JumpPOp(node.func.id))
-        self._ts.push()
+def resolve_statement(statement, fun, remap):
+    depth = 0
 
-    def visit_Return(self, node):
-        self._res.append(Info(f'Return {ast.unparse(node.value)}'))
-        if self._curr == self._entrypoint:
-            self._res.append(DoneOp())
-            return
+    new = []
+    resolved = {}
 
-        self.generic_visit(node)
-        # need to restore the stack back to its original value
-        for _ in range(self._ts.depth() - 1):
-            self._res.append(SwapOp())
-            self._res.append(PopOp())
-        # now restore the IP and jump
-        self._res.append(SwapOp())
-        self._res.append(PopIpOp())
+    for op in statement:
+        depth -= op.consumes()
+        if not isinstance(op, ResolvePOp):
+            continue
 
-    def visit_While(self, node):
-        self._res.append(Info(f'While {node}'))
-        raise Unimplemented()
+        if op.name() in resolved:
+            assert Exception()
 
-    def visit_If(self, node):
-        self._res.append(Info(f'If {node}'))
-        raise Unimplemented()
+        offset = remap[fun]['idx'][op.variable()]
+        print(offset, depth)
+        match op:
+            case ResolvePokePOp():
+                resolved[op.name()] = offset
+            case ResolvePeekPOp():
+                resolved[op.name()] = offset
+            case _:
+                continue
 
-    def visit_FunctionDef(self, node):
-        self._funcs[node.name] = []
-        self._curr = node.name
+    for op in statement:
+        if isinstance(op, ResolvePOp):
+            continue
 
-        self._ts.enter(node.name)
-        for decorator in node.decorator_list:
-            if decorator.id == 'entrypoint':
-                self._entrypoint = node.name
+        if not isinstance(op, PushPOp):
+            new.append(op)
+            continue
 
-        self._res.append(Info(f'Function {node.name}'))
-        self._res.append(Label(node.name))
-        # deal with the arguments
-        for child in node.body:
-            self.visit(child)
-        # print(node.__dict__)
-        self._funcs[node.name] = self._res
-        self._res = []
-        self._ts.leave()
+        res = resolved[op.name()]
+        new.append(PushOp(res))
 
-    def visit_Module(self, node):
-        # self._res.append(Info(f'Module {node}'))
-        self.generic_visit(node)
+    assert depth == 0
+    return new
+
+
+def fun_translation(fun, remapped):
+    """
+    Translate this function
+    """
+    ref = remapped[fun]
+    res = []
+
+    print('# ', fun)
+
+    # initialize all the internal variables as zero
+    for var in ref['defs']:
+        res.append(VariableLabel(var))
+        res.append(PushZeroOp())
+
+    # we can now start translating the code, statement by statement.
+    for expr in ref['ref'].body:
+        st = StatementTranslator(fun, remapped)
+        st.visit(expr)
+        translated = st.results()
+        # If we generate uneven code, we have an issue.
+        # For things like return, we have statements inserted to do the
+        # balancing
+        assert sum([op.consumes() for op in translated]) == 0
+        # Now fix up the references to variables
+        res += resolve_statement(translated, fun, remapped)
+
+    return res
+
+
+def il_translation(code):
+    # First, we need a list of variables and arguments for each function
+    vd = VariableDefinitions()
+    vd.visit(code)
+    # Next, map these to offsets in the current function
+    remapped = {}
+
+    entrypoint = None
+
+    for fun, vars in vd.results().items():
+        defs = vars['defs']
+        args = vars['args']
+        res = {i: idx for idx, i in enumerate(args + defs)}
+        remapped[fun] = vars.copy()
+        remapped[fun]['idx'] = res
+
+        print(fun, res)
+
+        if 'entrypoint' in vars['decorators']:
+            entrypoint = fun
+
+    translated = {}
+
+    # Do the translation, that still has some symbolic operations
+    for fun, _ in remapped.items():
+        translated[fun] = fun_translation(fun, remapped)
+
+    # Now merge the code together
+    res = []
+    for fun, code in translated.items():
+        res.append(Info(f'Function {fun}'))
+        res.append(Label(fun))
+        res += code
+
+    # Finally, add in a _start method that will call the entrypoint
+    # Calls the entrypoint with no arguments, so it can return to a DoneOp
+    # JumpPOp assembles to 2 instructions, giving the offset.
+    _start = [
+        Info('_start'),
+        Label('_start'),
+        PushSPOp(),
+        PushOp(4),
+        NewSPOp(),
+        JumpPOp(entrypoint),
+        DoneOp()
+    ]
+
+    return _start + res
 
 
 # Main
 
 def main():
-    t = Translator()
     with open(sys.argv[1]) as f:
         code = f.read()
-    t.visit(ast.parse(code))
-    ins = t.result()
-    for idx, op in enumerate(ins):
-        print(f'{idx:04x} {op}')
+
+    ins = il_translation(ast.parse(code))
+
+    ilins = assemble(ins)
+
+    for idx, op in enumerate(ilins):
+        print(f'{idx:04} {op}')
 
     print()
-    s = State(assemble(ins))
+    import time
+    s = State(assemble(ins), maxins=400)
     while not s.is_done():
-        print(s._stack)
+        print(s.get_ip(), s._stack)
         s.step()
 
 
