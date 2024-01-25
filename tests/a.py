@@ -1,21 +1,21 @@
 from code_lib import entrypoint
 
 
-def fun3(v):
-    return v - 1
-
-
-def fun2():
-    return 2 + fun3(3)
+def fun2(a, b):
+    c = a + b
+    return c + 2
 
 
 def fun(k):
-    return 42 + k + fun2() + fun2()
+    v = k + 99
+    v = v + 1
+    return v
 
 
 @entrypoint
 def main():
-    a = 3
-    d = fun(10)
-    a = a + d
-    return a
+    a = 2
+    d = fun(5)
+    a = a * d
+    d = fun2(10, 10)
+    return a + d

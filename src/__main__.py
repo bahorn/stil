@@ -25,11 +25,13 @@ class State:
         self._ins = 0
 
     def peek(self, idx=0):
+        assert idx >= 0
         print('peek> ',self._stack_base, idx)
         return self._stack[self._stack_base + idx]
 
     def poke(self, idx, value):
-        print('poke> ', self._stack_base, idx)
+        assert idx >= 0
+        print('poke> ', self._stack_base, idx, len(self._stack), value)
         self._stack[self._stack_base + idx] = value
 
     def pop(self):
@@ -520,7 +522,7 @@ class VariableDefinitions(ast.NodeVisitor):
 
         # ip is an hidden argument, used as part of the calling convention
         self._funcs[self._curr] = {
-            'args': [arg.arg for arg in node.args.args],
+            'args': [arg.arg for arg in node.args.args] + ['_ip'],
             'defs': sorted(list(set(self._definitions))),
             'ref': node,
             'decorators': decorators,
@@ -578,7 +580,7 @@ class StatementTranslator(ast.NodeVisitor):
 
     def visit_Call(self, node):
         # -2 to remove the ip and sp
-        call_args = len(self._remap[node.func.id]['args'])
+        call_args = len(self._remap[node.func.id]['args']) - 1
         if len(node.args) != call_args:
             raise Exception("Arg missmatch!")
 
@@ -774,6 +776,8 @@ def il_translation(code):
         PushOp(4),
         NewSPOp(),
         JumpPOp(entrypoint),
+        SwapOp(),
+        PopOp(),
         DoneOp()
     ]
 
