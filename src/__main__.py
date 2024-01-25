@@ -13,6 +13,16 @@ class Undefined(Exception):
     pass
 
 
+class SP(int):
+    def __str__(self):
+        return f'SP({super().__str__()})'
+
+
+class IP(int):
+    def __str__(self):
+        return f'IP({super().__str__()})'
+
+
 class State:
     def __init__(self, instructions, maxins=100):
         self._stack = []
@@ -20,18 +30,17 @@ class State:
         self._curr = 0
         self._cond = False
         self._done = False
-        self._stack_base = 0
+        self._stack_base = SP(0)
+        self._stack_base_stage = SP(0)
         self._maxins = maxins
         self._ins = 0
 
     def peek(self, idx=0):
         assert idx >= 0
-        print('peek> ',self._stack_base, idx)
         return self._stack[self._stack_base + idx]
 
     def poke(self, idx, value):
         assert idx >= 0
-        print('poke> ', self._stack_base, idx, len(self._stack), value)
         self._stack[self._stack_base + idx] = value
 
     def pop(self):
@@ -56,7 +65,10 @@ class State:
             self._done = True
             return
 
-        print(f'{self._curr:04} {ins}')
+        print(f'INS: {self._curr:04} {ins}')
+        print(f'STB: {self._stack_base}')
+        print('STF:', ' '.join(map(lambda x: f'{x[1]}', enumerate(self._stack))))
+        print()
 
         next = ins.action(self)
         if next is None:
@@ -66,10 +78,11 @@ class State:
         self._ins += 1
 
     def set_ip(self, value):
+        assert isinstance(value, IP)
         self._curr = value
 
     def get_ip(self):
-        return self._curr
+        return IP(self._curr)
 
     def set_cond(self, value):
         self._cond = value
@@ -77,8 +90,12 @@ class State:
     def get_cond(self):
         return self._cond
 
-    def set_stack_base(self, value):
-        self._stack_base = value
+    def set_stack_base(self):
+        self._stack_base = self._stack_base_stage
+
+    def stage_stack_base(self, value):
+        assert isinstance(value, SP)
+        self._stack_base_stage = value
 
     def get_stack_base(self):
         return self._stack_base
@@ -164,11 +181,18 @@ class PokeOp(ILOp):
         state.poke(a, b)
 
 
-class NewSPOp(ILOp):
+class StageSPOp(ILOp):
     CONSUMES = 0
 
     def action(self, state):
-        state.set_stack_base(len(state._stack))
+        state.stage_stack_base(SP(len(state._stack)))
+
+
+class SetSPOp(ILOp):
+    CONSUMES = 0
+
+    def action(self, state):
+        state.set_stack_base()
 
 
 class PushSPOp(ILOp):
@@ -184,7 +208,8 @@ class PopSPOp(ILOp):
 
     def action(self, state):
         sp = state.pop()
-        state.set_stack_base(sp)
+        state.stage_stack_base(sp)
+        state.set_stack_base()
 
 
 class DupOp(ILOp):
@@ -234,7 +259,8 @@ class DoubleOp(ILOp):
 
 class AddOp(DoubleOp):
     def op(self, a, b):
-        # print(a, b)
+        if isinstance(b, IP):
+            return IP(a + b)
         return a + b
 
 
@@ -348,7 +374,6 @@ class PopIpOp(ILOp):
 
     def action(self, state):
         next = state.pop()
-        print(next)
         state.set_ip(next)
 
 
@@ -479,7 +504,7 @@ def assemble(ins_list):
             continue
 
         # target
-        new_ins.append(PushOp(labels[ins.name()]))
+        new_ins.append(PushOp(IP(labels[ins.name()])))
 
         if isinstance(ins, JumpCondPOp):
             new_ins.append(JumpCondOp())
@@ -590,19 +615,23 @@ class StatementTranslator(ast.NodeVisitor):
         # Push the current SP to the stack
         self._res.append(PushSPOp())
 
-        # Set the new SP
-        self._res.append(NewSPOp())
+        # so we need to keep the sp while evaluating arguments, as they need to
+        # refer to the current state.
+        # but want it to be set at this point as we need the index
+        self._res.append(StageSPOp())
 
         # push all the arguments onto the stack
         for arg in node.args:
             self.visit(arg)
+
+        self._res.append(SetSPOp())
 
         # push the return address to the stack
         self._res.append(PushIpOp())
         # the code after is 4 operations ahead of the ip of that PushIpOp()
         self._res.append(PushOp(4))
         self._res.append(AddOp())
-        # Now do the jump
+
         self._res.append(JumpPOp(node.func.id))
         # Back in our code, we want to pop the arguments
         for _ in node.args:
@@ -679,7 +708,6 @@ def resolve_statement(statement, fun, remap):
             assert Exception()
 
         offset = remap[fun]['idx'][op.variable()]
-        print(offset, depth)
         match op:
             case ResolvePokePOp():
                 resolved[op.name()] = offset
@@ -709,8 +737,6 @@ def fun_translation(fun, remapped):
     """
     ref = remapped[fun]
     res = []
-
-    print('# ', fun)
 
     # initialize all the internal variables as zero
     for var in ref['defs']:
@@ -773,8 +799,9 @@ def il_translation(code):
         Info('_start'),
         Label('_start'),
         PushSPOp(),
-        PushOp(4),
-        NewSPOp(),
+        PushOp(IP(5)),
+        StageSPOp(),
+        SetSPOp(),
         JumpPOp(entrypoint),
         SwapOp(),
         PopOp(),
@@ -801,7 +828,6 @@ def main():
     import time
     s = State(assemble(ins), maxins=400)
     while not s.is_done():
-        print(s.get_ip(), s._stack)
         s.step()
 
 

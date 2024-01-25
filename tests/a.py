@@ -3,19 +3,17 @@ from code_lib import entrypoint
 
 def fun2(a, b):
     c = a + b
-    return c + 2
+    d = c + 5
+    return c
 
 
 def fun(k):
-    v = k + 99
-    v = v + 1
-    return v
+    y = fun2(k, 10)
+    return y
 
 
 @entrypoint
 def main():
     a = 2
     d = fun(5)
-    a = a * d
-    d = fun2(10, 10)
     return a + d
