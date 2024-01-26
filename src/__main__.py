@@ -352,8 +352,9 @@ class JumpOp(ILOp):
         return True
 
     def action(self, state):
+        ip = state.pop()
         if self.cond(state):
-            state.set_ip(state.pop())
+            state.set_ip(ip)
             return 0
 
 
@@ -692,6 +693,26 @@ class StatementTranslator(ast.NodeVisitor):
 
         self._res.append(op)
 
+    def visit_If(self, node):
+        if node.orelse != []:
+            raise Unimplemented()
+
+        ref = self.get_idx('if')
+        # Conditional Check
+        self.visit(node.test)
+        # if it fails, jump to ref
+        self._res.append(PushOp(1))
+        self._res.append(CmpNEqOp())
+        self._res.append(JumpCondPOp(ref))
+
+        # body
+        for item in node.body:
+            self.visit(item)
+
+        # Fall through label
+        self._res.append(Label(ref))
+        self._res.append(NOP())
+
 
 def resolve_statement(statement, fun, remap):
     depth = 0
@@ -771,6 +792,7 @@ def il_translation(code):
         defs = vars['defs']
         args = vars['args']
         res = {i: idx for idx, i in enumerate(args + defs)}
+        print(res)
         remapped[fun] = vars.copy()
         remapped[fun]['idx'] = res
 
@@ -799,9 +821,9 @@ def il_translation(code):
         Info('_start'),
         Label('_start'),
         PushSPOp(),
-        PushOp(IP(5)),
         StageSPOp(),
         SetSPOp(),
+        PushOp(IP(5)),
         JumpPOp(entrypoint),
         SwapOp(),
         PopOp(),
