@@ -60,7 +60,7 @@ class StatementTranslator(ast.NodeVisitor):
 
     IMPLEMENTED = (
         ast.Assign, ast.Call, ast.Return, ast.Name, ast.Constant, ast.Expr,
-        ast.BinOp
+        ast.BinOp, ast.If, ast.While
     )
 
     def __init__(self, funcname, remap):
