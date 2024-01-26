@@ -713,6 +713,31 @@ class StatementTranslator(ast.NodeVisitor):
         self._res.append(Label(ref))
         self._res.append(NOP())
 
+    def visit_While(self, node):
+        if node.orelse != []:
+            raise Unimplemented()
+
+        ref_cond = self.get_idx('while-cond')
+        ref_end = self.get_idx('while-end')
+
+        # Conditional Check
+        self._res.append(Label(ref_cond))
+        self.visit(node.test)
+        # if it fails, jump to ref
+        self._res.append(PushOp(0))
+        self._res.append(CmpEqOp())
+        self._res.append(JumpCondPOp(ref_end))
+
+        # body
+        for item in node.body:
+            self.visit(item)
+
+        self._res.append(JumpPOp(ref_cond))
+
+        # Fall through label
+        self._res.append(Label(ref_end))
+        self._res.append(NOP())
+
 
 def resolve_statement(statement, fun, remap):
     depth = 0
@@ -848,7 +873,7 @@ def main():
 
     print()
     import time
-    s = State(assemble(ins), maxins=400)
+    s = State(assemble(ins), maxins=1000)
     while not s.is_done():
         s.step()
 
