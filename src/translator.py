@@ -276,7 +276,7 @@ def fun_translation(fun, remapped):
     # initialize all the internal variables as zero
     for var in ref['defs']:
         res.append(ilop.VariableLabel(var))
-        res.append(ilop.PushZeroOp())
+        res.append(ilop.PushOp(0))
 
     # we can now start translating the code, statement by statement.
     for expr in ref['ref'].body:

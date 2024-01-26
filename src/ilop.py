@@ -50,13 +50,6 @@ class PushOp(ILOp):
         return f'PushOp ({self._value})'
 
 
-class PushZeroOp(ILOp):
-    CONSUMES = -1
-
-    def action(self, state):
-        state.push(0)
-
-
 class IncOp(ILOp):
     def action(self, state):
         a = state.pop()
